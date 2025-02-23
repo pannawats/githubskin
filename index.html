@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Orthographic Grid Gallery – Selective Pulsing & Legend</title>
+  <style>
+    /* All text in Cascadia Mono */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; font-family: 'Cascadia Mono', monospace; }
+    /* 34 columns x 26 rows, each cell is 45px */
+    .grid-container {
+      display: grid;
+      grid-template-columns: repeat(34, 45px);
+      grid-template-rows: repeat(26, 45px);
+      position: fixed;
+      width: 100vw;
+      height: 100vh;
+      z-index: 1;
+    }
+    .grid-cell {
+      border: 0.5px solid #ffffff13;
+      position: relative;
+      transition: all 0.3s ease;
+    }
+    .grid-cell:hover {
+      background: rgba(255, 255, 255, 0.1);
+      mix-blend-mode: difference;
+    }
+    .cell-label {
+      position: absolute;
+      color: white;
+      font-size: 8px;
+      padding: 2px;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    .grid-cell:hover .cell-label { opacity: 1; }
+    #canvas-container {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      pointer-events: none;
+      z-index: 0;
+    }
+    /* Tooltip for 3D models */
+    #model-label {
+      position: fixed;
+      background: rgba(0,0,0,0.7);
+      color: #fff;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      pointer-events: none;
+      display: none;
+      z-index: 2;
+    }
+    /* Legend box near cell B2 (approx 45px from top/left), font-size 10px */
+    #legend {
+      position: absolute;
+      left: 45px;
+      top: 45px;
+      color: #fff;
+      font-size: 10px;
+      padding: 4px;
+      background: rgba(0, 0, 0, 0.6);
+      border: 1px solid #fff;
+      z-index: 3;
+      white-space: pre-line;
+      display: none;
+    }
+    /* Info box at cell N2 (row N ~index 13, column 2 ~index 1) */
+    #info {
+      position: absolute;
+      left: 45px;
+      top: calc(45px * 13);
+      color: #fff;
+      font-size: 10px;
+      padding: 4px;
+      background: rgba(0, 0, 0, 0.6);
+      border: 1px solid #fff;
+      z-index: 3;
+      white-space: pre-line;
+    }
+  </style>
+  <!-- Import map for modules -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.module.js",
+      "three/examples/jsm/": "https://cdn.jsdelivr.net/npm/three@0.149.0/examples/jsm/",
+      "three/examples/jsm/lines/": "https://cdn.jsdelivr.net/npm/three@0.149.0/examples/jsm/lines/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div class="grid-container" id="grid"></div>
+  <div id="canvas-container"></div>
+  <div id="model-label"></div>
+  <div id="legend"></div>
+  <div id="info"></div>
+
+  <!-- Main script as a module -->
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+    import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+    import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+    import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+    import { Line2 } from 'three/examples/jsm/lines/Line2.js';
+    import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
+    import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
+
+    // ----------------------------------------------------
+    // 1) CREATE THE 2D GRID
+    // ----------------------------------------------------
+    const gridContainer = document.getElementById('grid');
+    const numCols = 34;
+    const numRows = 26;
+    const cellSize = 45; // 45px per cell
+    for (let row = 0; row < numRows; row++) {
+      for (let col = 0; col < numCols; col++) {
+        const cell = document.createElement('div');
+        cell.className = 'grid-cell';
+        const rowLabel = String.fromCharCode(65 + row);
+        const colLabel = col + 1;
+        cell.innerHTML = `<div class="cell-label">${rowLabel}${colLabel}</div>`;
+        gridContainer.appendChild(cell);
+      }
+    }
+
+    // ----------------------------------------------------
+    // 2) SET UP THE SCENE, CAMERA, & RENDERER
+    // ----------------------------------------------------
+    const scene = new THREE.Scene();
+    const totalWidth = numCols * cellSize;
+    const totalHeight = numRows * cellSize;
+    const camera = new THREE.OrthographicCamera(0, totalWidth, totalHeight, 0, -1000, 1000);
+    camera.position.set(0, 0, 10);
+    camera.lookAt(0, 0, 0);
+    const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+    // ----------------------------------------------------
+    // 3) SET UP POST-PROCESSING (BLOOM)
+    // ----------------------------------------------------
+    const composer = new EffectComposer(renderer);
+    const renderPass = new RenderPass(scene, camera);
+    composer.addPass(renderPass);
+    const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.0, 0.0, 0.0);
+    composer.addPass(bloomPass);
+
+    // ----------------------------------------------------
+    // 4) LIGHTING
+    // ----------------------------------------------------
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+    scene.add(ambientLight);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+    dirLight.position.set(0, 1000, 1000);
+    scene.add(dirLight);
+
+    // ----------------------------------------------------
+    // 5) MODEL PLACEMENTS (with coordinate property)
+    // ----------------------------------------------------
+    const modelPlacements = [
+      { file: 'rebirth.glb',         row: 13.05, col: 16, coord: "I17" },
+      { file: 'murder.glb',          row: 11.45, col: 15, coord: "H16" },
+      { file: '1natural_death.glb',  row: 14.65, col: 14, coord: "J15" },
+      { file: 'hospital_death.glb',  row: 16.25, col: 16, coord: "K17" },
+      { file: 'sudden_death.glb',    row: 11.45, col: 17, coord: "H18" },
+      { file: 'suicide.glb',         row: 14.65, col: 18, coord: "J19" },
+      { file: 'meritrituals.glb',    row: 8.25,  col: 15, coord: "F16" },
+      { file: 'meritrituals.glb',    row: 8.25,  col: 17, coord: "F18" },
+      { file: 'judgment.glb',        row: 5.05,  col: 15, coord: "D16" },
+      { file: 'judgment.glb',        row: 5.05,  col: 17, coord: "D18" },
+      { file: 'judgment.glb',        row: 17.85, col: 13, coord: "L14" },
+      { file: 'judgment.glb',        row: 22.65, col: 17, coord: "O18" },
+      { file: 'judgment.glb',        row: 21.05, col: 23, coord: "N24" },
+      { file: 'phi_tai_hong.glb',    row: 17.85, col: 19, coord: "L20" },
+      { file: 'heaven.glb',          row: 5.05,  col: 13, coord: "D14" },
+      { file: 'heaven.glb',          row: 5.05,  col: 19, coord: "D20" },
+      { file: 'heaven.glb',          row: 19.45, col: 11, coord: "M12" },
+      { file: 'heaven.glb',          row: 21.05, col: 19, coord: "N20" },
+      { file: 'heaven.glb',          row: 21.05, col: 25, coord: "N26" },
+      { file: 'hell.glb',            row: 1.85,  col: 15, coord: "B16" },
+      { file: 'hell.glb',            row: 1.85,  col: 17, coord: "B18" },
+      { file: 'hell.glb',            row: 21.05, col: 13, coord: "N14" },
+      { file: 'hell.glb',            row: 24.25, col: 19, coord: "P20" },
+      { file: 'hell.glb',            row: 24.25, col: 23, coord: "P24" },
+      { file: 'university.glb',      row: 14.65, col: 12, coord: "J13" },
+      { file: 'temple.glb',          row: 8.25,  col: 9,  coord: "F10" },
+      { file: 'temple.glb',          row: 8.25,  col: 23, coord: "F24" },
+      { file: 'temple.glb',          row: 16.25, col: 10, coord: "K11" },
+      { file: 'temple.glb',          row: 13.05, col: 22, coord: "I23" },
+      { file: 'rescue.glb',          row: 11.45, col: 13, coord: "H14" },
+      { file: 'rescue.glb',          row: 11.45, col: 19, coord: "H20" },
+      { file: 'rescue.glb',          row: 14.65, col: 20, coord: "J21" },
+      { file: 'cremation.glb',       row: 8.25,  col: 7,  coord: "F8" },
+      { file: 'cremation.glb',       row: 14.65, col: 8,  coord: "J9" },
+      { file: 'cremation.glb',       row: 8.25,  col: 25, coord: "F26" },
+      { file: 'cremation.glb',       row: 14.65, col: 24, coord: "J25" },
+      { file: 'cremation.glb',       row: 22.65, col: 15, coord: "O16" },
+      { file: 'storage.glb',         row: 8.25,  col: 27, coord: "F28" },
+      { file: 'storage.glb',         row: 14.65, col: 26, coord: "J27" },
+      { file: 'storage.glb',         row: 8.25,  col: 5,  coord: "F6" },
+      { file: 'storage.glb',         row: 14.65, col: 6,  coord: "J7" },
+      { file: 'storage.glb',         row: 24.25, col: 13, coord: "P14" },
+      { file: 'hospital.glb',        row: 19.45, col: 15, coord: "M16" },
+      { file: 'police_station.glb',  row: 16.25, col: 22, coord: "K23" },
+      { file: 'police_station.glb',  row: 9.85,  col: 11, coord: "G12" },
+      { file: 'police_station.glb',  row: 9.85,  col: 21, coord: "G22" }
+    ];
+
+    // ----------------------------------------------------
+    // 6c) GROUP DEFINITIONS (with primaryCoord)
+    // ----------------------------------------------------
+    const groups = [
+      { id: 2,  triggerSet: ["H16"], groupMembers: ["I17", "H16", "H14", "G12", "F10", "F8", "F6", "F16", "D16", "D14", "B16"], primaryCoord: "H16" },
+      { id: 3,  triggerSet: ["H14", "G12", "F10", "F8", "F6"], groupMembers: ["I17", "H16", "H14", "G12", "F10", "F8", "F6"], primaryCoord: "H16" },
+      { id: 4,  triggerSet: ["F16", "D16", "D14", "B16"], groupMembers: ["I17", "H16", "F16", "D16", "D14", "B16"], primaryCoord: "H16" },
+      { id: 5,  triggerSet: ["H18"], groupMembers: ["I17", "H18", "F18", "D18", "B18", "D20", "H20", "G22", "F24", "F26", "F28"], primaryCoord: "H18" },
+      { id: 6,  triggerSet: ["H20", "G22", "F24", "F26", "F28"], groupMembers: ["I17", "H18", "H20", "G22", "F24", "F26", "F28"], primaryCoord: "H18" },
+      { id: 7,  triggerSet: ["F18", "D18", "B18", "D20"], groupMembers: ["I17", "H18", "F18", "D18", "B18", "D20"], primaryCoord: "H18" },
+      { id: 8,  triggerSet: ["J19"], groupMembers: ["I17", "J19", "L20", "M22", "N24", "N26", "P24", "J21", "I23", "K23", "J25", "J27"], primaryCoord: "J19" },
+      { id: 9,  triggerSet: ["L20", "M22", "N24", "N26", "P24"], groupMembers: ["I17", "J19", "L20", "M22", "N24", "N26", "P24"], primaryCoord: "J19" },
+      { id: 10, triggerSet: ["J21", "I23", "K23", "J25", "J27"], groupMembers: ["I17", "J19", "J21", "I23", "K23", "J25", "J27"], primaryCoord: "J19" },
+      { id: 11, triggerSet: ["K17", "N20"], groupMembers: ["I17", "K17", "M16", "M18", "O16", "O18", "P14", "P20", "N20"], primaryCoord: "N20" },
+      { id: 12, triggerSet: ["M16", "O16", "P14"], groupMembers: ["I17", "K17", "M16", "O16", "P14"], primaryCoord: "K17" },
+      { id: 13, triggerSet: ["M18", "O18", "N20", "P20"], groupMembers: ["I17", "K17", "M18", "O18", "M20", "P20"], primaryCoord: "K17" },
+      { id: 14, triggerSet: ["J15"], groupMembers: ["I17", "J15", "J13", "K11", "J9", "J7", "L14", "N14", "M12"], primaryCoord: "J15" },
+      { id: 15, triggerSet: ["J13", "K11", "J9", "J7"], groupMembers: ["I17", "J15", "J13", "K11", "J9", "J7"], primaryCoord: "J15" },
+      { id: 16, triggerSet: ["L14", "N14", "M12"], groupMembers: ["I17", "J15", "L14", "N14", "M12"], primaryCoord: "J15" }
+    ];
+
+    // Global active group and random mode variables
+    let activePulsingGroup = null;
+    let activeLegendText = "";
+    let activePrimaryCoord = null;
+    let randomModeActive = false;
+    const randomAllowedIds = [3,4,6,7,9,10,12,13,15,16];
+    let lastRandomTime = Date.now();
+    let randomGroupCache = null; // store the last random group
+
+    // Declare deathCount so the counter increases every minute.
+    let deathCount = 0;
+
+    // ----------------------------------------------------
+    // 6e) LOAD MODELS WITH GLTFLoader AND STORE THEIR COORD
+    // ----------------------------------------------------
+    const gltfLoader = new GLTFLoader();
+    const glowingModels = [];
+    function loadAndPlaceModel(fileName, row, col, coord) {
+      gltfLoader.load(
+        'models/' + fileName,
+        (gltf) => {
+          const model = gltf.scene;
+          model.userData.filename = fileName;
+          model.userData.coord = coord;
+          const bbox = new THREE.Box3().setFromObject(model);
+          const size = bbox.getSize(new THREE.Vector3());
+          const maxDim = Math.max(size.x, size.y, size.z);
+          const scale = (1.25 * 0.9 * cellSize) / maxDim;
+          model.scale.set(scale, scale, scale);
+          const newBbox = new THREE.Box3().setFromObject(model);
+          const center = new THREE.Vector3();
+          newBbox.getCenter(center);
+          model.position.sub(center);
+          const cellCenterX = (col + 0.5) * cellSize;
+          const cellCenterY = totalHeight - ((row + 0.5) * cellSize);
+          model.position.x += cellCenterX;
+          model.position.y += cellCenterY;
+          model.traverse(child => {
+            if(child.isMesh) {
+              child.renderOrder = 1;
+              if(child.material) {
+                child.material.transparent = true;
+                child.material.opacity = 1.0;
+                child.material.emissive = new THREE.Color(0xffffff);
+                child.material.emissiveIntensity = 0.2;
+              }
+            }
+          });
+          scene.add(model);
+          glowingModels.push(model);
+        },
+        undefined,
+        (error) => console.error('Error loading ' + fileName, error)
+      );
+    }
+    modelPlacements.forEach(({ file, row, col, coord }) => {
+      loadAndPlaceModel(file, row, col, coord);
+    });
+
+    // ----------------------------------------------------
+    // 7) DRAW STRAIGHT LINES WITH GLOW
+    // ----------------------------------------------------
+    let glowLineMaterials = [];
+    let lineMaterials = [];
+    function gridToPosition(coord) {
+      const letter = coord.charAt(0);
+      const number = parseInt(coord.slice(1));
+      const letterIndex = letter.charCodeAt(0) - 65;
+      const rowVal = letterIndex * 1.6 + 0.25;
+      const colVal = number - 1;
+      const x = (colVal + 0.5) * cellSize;
+      const y = totalHeight - ((rowVal + 0.5) * cellSize);
+      return new THREE.Vector3(x, y, -1);
+    }
+    function createLine(coordArray, colorHex) {
+      // Create normal line
+      const points = coordArray.map(coord => gridToPosition(coord));
+      const geometry = new THREE.BufferGeometry().setFromPoints(points);
+      const material = new THREE.LineBasicMaterial({
+        color: colorHex,
+        transparent: true,
+        opacity: 0.2
+      });
+      material.userData.baseColor = new THREE.Color(colorHex);
+      material.userData.coords = coordArray;
+      const line = new THREE.Line(geometry, material);
+      line.renderOrder = -1;
+      scene.add(line);
+      lineMaterials.push(material);
+
+      // Create glow line using Line2 with thickness 1.5
+      const positions = [];
+      for (const p of points) {
+        positions.push(p.x, p.y, p.z);
+      }
+      const glowGeometry = new LineGeometry();
+      glowGeometry.setPositions(positions);
+      const glowMaterial = new LineMaterial({
+         color: colorHex,
+         linewidth: 1.5,
+         transparent: true,
+         opacity: 0.2,
+         resolution: new THREE.Vector2(window.innerWidth, window.innerHeight)
+      });
+      glowMaterial.userData = { baseColor: new THREE.Color(colorHex), coords: coordArray };
+      const glowLine = new Line2(glowGeometry, glowMaterial);
+      glowLine.computeLineDistances();
+      glowLine.scale.set(1, 1, 1);
+      glowLine.renderOrder = -2;
+      scene.add(glowLine);
+      glowLineMaterials.push(glowMaterial);
+    }
+    const whiteLineSegs = [
+      ["I17", "H16"],
+      ["I17", "H18"],
+      ["I17", "J15"],
+      ["I17", "J19"],
+      ["I17", "K17"]
+    ];
+    whiteLineSegs.forEach(seg => { createLine(seg, 0xffffff); });
+    const blueLineSegs = [
+      ["H16", "H14", "G12", "F10", "F8", "F6"],
+      ["J15", "J13", "K11", "J9", "J7"],
+      ["K17", "M16", "O16", "P14"],
+      ["J19", "J21", "K23", "I23", "J25", "J27"],
+      ["J21", "I23"],
+      ["H18", "H20", "G22", "F24", "F26", "F28"]
+    ];
+    blueLineSegs.forEach(seg => { createLine(seg, 0x00CFFF); });
+    const redLineSegs = [
+      ["H16", "F16", "D16", "D14"],
+      ["D16", "B16"],
+      ["H18", "F18", "D18", "B18"],
+      ["D18", "D20"],
+      ["J19", "L20", "M22", "N24", "N26"],
+      ["N24", "P24"],
+      ["K17", "M18", "O18", "N20"],
+      ["O18", "P20"],
+      ["J15", "L14", "N14"],
+      ["L14", "M12"]
+    ];
+    redLineSegs.forEach(seg => { createLine(seg, 0xFF0000); });
+
+    // ----------------------------------------------------
+    // 10) INFO & LEGEND
+    // ----------------------------------------------------
+    const legendDiv = document.getElementById('legend');
+    const openTime = new Date();
+    const infoDiv = document.getElementById('info');
+    infoDiv.innerText = `In Thailand, every minute, one life is lost.
+Death is not an end but a passage through its journey.
+Deaths: ${deathCount}
+Counting since: ${openTime.toLocaleTimeString()}`;
+    infoDiv.style.left = (1 * cellSize) + "px";
+    infoDiv.style.top = (13 * cellSize) + "px";
+
+    // Helper: get model name for a given coordinate
+    function getModelNameForCoord(coord) {
+      for (const mp of modelPlacements) {
+        if (mp.coord === coord) {
+          return transformFilename(mp.file);
+        }
+      }
+      return "";
+    }
+
+    // ----------------------------------------------------
+    // 11) GROUP UPDATE & LEGEND FUNCTIONS
+    // ----------------------------------------------------
+    function updateActiveGroup(hoverCoord, hoveredName) {
+      // Special case for I17 hover:
+      if (hoverCoord === "I17") {
+        activePulsingGroup = ["I17", "J15", "H16", "H18", "J19", "K17"];
+        activePrimaryCoord = "I17";
+        activeLegendText = generateLegendText(hoverCoord, activePulsingGroup, hoveredName);
+        legendDiv.innerText = activeLegendText;
+        legendDiv.style.display = "block";
+        randomModeActive = false;
+        return;
+      }
+
+      for (const grp of groups) {
+        if (grp.triggerSet.includes(hoverCoord)) {
+          // Copy groupMembers so that modifications are temporary
+          let groupMembers = [...grp.groupMembers];
+
+          // When hovering on O18 or P20, ensure N20 is included
+          if ((hoverCoord === "O18" || hoverCoord === "P20") && !groupMembers.includes("N20")) {
+            groupMembers.push("N20");
+          }
+          
+          // When hovering on N20, remove M16, O16, and P14 from glowing
+          if (hoverCoord === "N20") {
+            groupMembers = groupMembers.filter(coord => !["M16", "O16", "P14"].includes(coord));
+          }
+
+          activePulsingGroup = groupMembers;
+          activePrimaryCoord = grp.primaryCoord;
+          activeLegendText = generateLegendText(hoverCoord, activePulsingGroup, hoveredName);
+          legendDiv.innerText = activeLegendText;
+          legendDiv.style.display = "block";
+          randomModeActive = false;
+          return grp;
+        }
+      }
+      return null;
+    }
+    function generateLegendText(hoverCoord, groupArray, hoveredName) {
+      const others = groupArray.filter(c => c !== hoverCoord);
+      const names = [];
+      modelPlacements.forEach(mp => {
+        if (others.includes(mp.coord)) {
+          names.push(transformFilename(mp.file));
+        }
+      });
+      const uniqueNames = [...new Set(names)];
+      let text = "selecting " + hoverCoord + " " + hoveredName + "\nConnecting to\n";
+      uniqueNames.forEach(n => { text += "   " + n + "\n"; });
+      return text;
+    }
+
+    // ----------------------------------------------------
+    // 12) RAYCASTING & MOUSE MOVE
+    // ----------------------------------------------------
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    const modelLabelDiv = document.getElementById('model-label');
+    function transformFilename(filename) {
+      let name = filename.replace('.glb', '');
+      if (name.toLowerCase() === 'rescue') return 'Rescue Unit';
+      name = name.replace(/^\d+/, '');
+      name = name.replace(/_/g, ' ');
+      return name.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+    }
+    function onMouseMove(event) {
+      mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObjects(glowingModels, true);
+      if (intersects.length > 0) {
+        let obj = intersects[0].object;
+        while (obj.parent && !obj.parent.userData.coord) {
+          obj = obj.parent;
+        }
+        const coord = obj.parent ? obj.parent.userData.coord : obj.userData.coord;
+        const filename = obj.parent ? obj.parent.userData.filename : obj.userData.filename;
+        if (coord && filename) {
+          const modelName = transformFilename(filename);
+          modelLabelDiv.innerText = "selecting " + coord + " " + modelName;
+          modelLabelDiv.style.left = event.clientX + 10 + "px";
+          modelLabelDiv.style.top = event.clientY + 10 + "px";
+          modelLabelDiv.style.display = "block";
+          updateActiveGroup(coord, modelName);
+          return;
+        }
+      } else {
+        modelLabelDiv.style.display = "none";
+        // Instead of clearing the pulsing effect when no model is hovered,
+        // revert to the random pathway if available.
+        if (randomGroupCache) {
+          activePulsingGroup = randomGroupCache.groupMembers;
+          activePrimaryCoord = randomGroupCache.primaryCoord;
+          activeLegendText = generateLegendText(activePrimaryCoord, activePulsingGroup, getModelNameForCoord(activePrimaryCoord));
+          legendDiv.innerText = activeLegendText;
+          legendDiv.style.display = "block";
+          randomModeActive = true;
+        } else {
+          activePulsingGroup = null;
+          activePrimaryCoord = null;
+          activeLegendText = "";
+          legendDiv.style.display = "none";
+        }
+      }
+    }
+    window.addEventListener("mousemove", onMouseMove);
+
+    // ----------------------------------------------------
+    // 13) RANDOM MODE & DEATH COUNTER (update every minute)
+    // ----------------------------------------------------
+    setInterval(() => {
+      deathCount++;
+      infoDiv.innerText = `In Thailand, every minute, one life is lost.
+Death is not an end but a passage through its journey.
+Deaths: ${deathCount}
+Counting since: ${openTime.toLocaleTimeString()}`;
+    }, 60000);
+
+    setInterval(() => {
+      if (activePulsingGroup === null || randomModeActive) {
+        const allowed = groups.filter(grp => randomAllowedIds.includes(grp.id));
+        if (allowed.length > 0) {
+          const randomGroup = allowed[Math.floor(Math.random() * allowed.length)];
+          activePulsingGroup = randomGroup.groupMembers;
+          activePrimaryCoord = randomGroup.primaryCoord;
+          const modelName = getModelNameForCoord(activePrimaryCoord);
+          activeLegendText = generateLegendText(activePrimaryCoord, activePulsingGroup, modelName);
+          legendDiv.innerText = activeLegendText;
+          legendDiv.style.display = "block";
+          randomModeActive = true;
+          randomGroupCache = { groupMembers: activePulsingGroup, primaryCoord: activePrimaryCoord };
+          lastRandomTime = Date.now();
+        }
+      }
+    }, 60000);
+
+    // ----------------------------------------------------
+    // 14) ANIMATION: SELECTIVE PULSING, OPACITY, & BLOOM
+    // ----------------------------------------------------
+    function easeInOutQuad(t) {
+      return t < 0.5 ? 2*t*t : -1 + (4 - 2*t)*t;
+    }
+    function animate() {
+      requestAnimationFrame(animate);
+      const now = Date.now();
+      const time = now * 0.001;
+      const pulse = easeInOutQuad((Math.sin(time * 0.3) + 1) / 2);
+      const glowIntensity = 0.5 + 2.0 * pulse;
+      const factor = (glowIntensity - 0.5) / 2.0;
+      
+      if (activePulsingGroup === null) {
+        glowingModels.forEach(model => {
+          model.traverse(child => {
+            if (child.isMesh && child.material) {
+              child.material.opacity = 1.0;
+              child.material.emissiveIntensity = glowIntensity;
+            }
+          });
+        });
+        lineMaterials.forEach(mat => {
+          let base = mat.userData.baseColor;
+          let target;
+          if (base.getHex() === 0xff0000) target = new THREE.Color(0xffaaaa);
+          else if (base.getHex() === 0x00CFFF) target = new THREE.Color(0xaaccff);
+          else target = new THREE.Color(base.getHex());
+          const newColor = base.clone().lerp(target, factor);
+          mat.color.copy(newColor);
+          mat.opacity = 0.2 + (0.5 * factor);
+        });
+        glowLineMaterials.forEach(mat => {
+          let base = mat.userData.baseColor;
+          let target;
+          if (base.getHex() === 0xff0000) target = new THREE.Color(0xffaaaa);
+          else if (base.getHex() === 0x00CFFF) target = new THREE.Color(0xaaccff);
+          else target = new THREE.Color(base.getHex());
+          const newColor = base.clone().lerp(target, factor);
+          mat.color.copy(newColor);
+          mat.opacity = 0.2 + (0.5 * factor);
+        });
+        bloomPass.strength = 2.0 + 1.9 * factor;
+        bloomPass.threshold = 0.7;
+      } else {
+        glowingModels.forEach(model => {
+          const mCoord = model.userData.coord;
+          model.traverse(child => {
+            if (child.isMesh && child.material) {
+              child.material.transparent = true;
+              if (activePulsingGroup.includes(mCoord)) {
+                child.material.opacity = 1.0;
+                child.material.emissiveIntensity = glowIntensity;
+                child.renderOrder = 2;
+              } else {
+                child.material.opacity = 0.2;
+                child.material.emissiveIntensity = 0.0;
+                child.renderOrder = 1;
+              }
+            }
+          });
+        });
+        lineMaterials.forEach(mat => {
+          if (mat.userData.baseColor.getHex() === 0xffffff) {
+            if (activePrimaryCoord && JSON.stringify(mat.userData.coords) === JSON.stringify(["I17", activePrimaryCoord])) {
+              const newColor = mat.userData.baseColor.clone().lerp(new THREE.Color(0xffffff), factor);
+              mat.color.copy(newColor);
+              mat.opacity = 0.2 + (0.5 * factor);
+            } else {
+              mat.opacity = 0.2;
+            }
+          } else {
+            if (mat.userData.coords.some(c => activePulsingGroup.includes(c))) {
+              let base = mat.userData.baseColor;
+              let target;
+              if (base.getHex() === 0xff0000) target = new THREE.Color(0xffaaaa);
+              else if (base.getHex() === 0x00CFFF) target = new THREE.Color(0xaaccff);
+              else target = new THREE.Color(base.getHex());
+              const newColor = base.clone().lerp(target, factor);
+              mat.color.copy(newColor);
+              mat.opacity = 0.2 + (0.5 * factor);
+            } else {
+              mat.opacity = 0.2;
+              mat.color.copy(mat.userData.baseColor);
+            }
+          }
+        });
+        glowLineMaterials.forEach(mat => {
+          if (mat.userData.coords.some(c => activePulsingGroup.includes(c))) {
+            let base = mat.userData.baseColor;
+            let target;
+            if (base.getHex() === 0xff0000) target = new THREE.Color(0xffaaaa);
+            else if (base.getHex() === 0x00CFFF) target = new THREE.Color(0xaaccff);
+            else target = new THREE.Color(base.getHex());
+            const newColor = base.clone().lerp(target, factor);
+            mat.color.copy(newColor);
+            mat.opacity = 0.2 + (0.5 * factor);
+          } else {
+            mat.opacity = 0.2;
+            mat.color.copy(mat.userData.baseColor);
+          }
+        });
+        bloomPass.strength = 2.0 + 1.9 * factor;
+        bloomPass.threshold = 0.7;
+      }
+      composer.render();
+    }
+    animate();
+
+    // ----------------------------------------------------
+    // 15) HANDLE WINDOW RESIZE
+    // ----------------------------------------------------
+    window.addEventListener("resize", () => {
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      composer.setSize(window.innerWidth, window.innerHeight);
+      camera.updateProjectionMatrix();
+      glowLineMaterials.forEach(mat => {
+        mat.resolution.set(window.innerWidth, window.innerHeight);
+      });
+    });
+  </script>
+</body>
+</html>
